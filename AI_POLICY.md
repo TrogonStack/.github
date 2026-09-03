@@ -90,7 +90,7 @@ writing code and opening a pull request a very cheap operation, which can easily
 responsible for reviewing and supporting those changes.
 
 - **Bias towards discussion first:** For anything beyond a clearly scoped fix, we encourage you to
-  open an issue or a [discussion](https://github.com/orgs/straw-hat-team/discussions) and drive
+  open an issue or a [discussion](https://github.com/TrogonStack/.github/discussions) and drive
   alignment on the direction before implementing the required changes. This is not a hard
   requirement, but it is an effective way to avoid spending cycles on a change that we won't accept.
 - **Keep changes small and focused:** This reduces the effort of reviewing the change and ensuring
