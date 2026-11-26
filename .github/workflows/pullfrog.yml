@@ -1,0 +1,94 @@
+# Runs Pullfrog's open-source agent on a GitHub-hosted runner, with a
+# self-hosted model for the brain. The model sits behind a gateway that is
+# reachable only on our tailnet, so the job joins the tailnet first. Pullfrog's
+# hosted service is not involved: GitHub access comes from this job's own
+# GITHUB_TOKEN and the model from the gateway.
+#
+# Callers must grant the job `id-token: write` (the tailnet login is an OIDC
+# exchange). A called workflow can only narrow the caller's permissions, never
+# widen them, so granting it here would do nothing.
+#
+# Configuration comes from the caller's context, not from this repository.
+# The two secrets are passed by the caller (org or repo secrets there), and
+# `vars` in a called workflow resolves against the caller. Expected vars:
+# TS_OAUTH_CLIENT_ID, TS_AUDIENCE.
+name: Pullfrog
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        type: string
+        required: false
+        default: ""
+        description: Agent prompt; empty reviews the pull request that triggered the caller
+    secrets:
+      AGENTGATEWAY_TAILNET_URL:
+        required: true
+      AGENTGATEWAY_TROGONSTACK_CI_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+# Declared here, not in callers: the same group in both would make the called
+# workflow wait on its own caller.
+concurrency:
+  group: pullfrog-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  pullfrog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      # Kernel tun mode on the host, which is why the agent runs on the host
+      # and not in a job container: Pullfrog sandboxes shell commands with
+      # `sudo unshare`, which works on hosted runners as they are, and a
+      # container would need its own route to the tailnet. quiet keeps the
+      # action from logging the setup details.
+      - name: Join the tailnet
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: tag:ci
+          log-mode: quiet
+      # Credentials stay persisted: the action runs git with GH_TOKEN, and the
+      # checkout is not uploaded anywhere.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1 # zizmor: ignore[artipacked]
+      - name: Run agent
+        uses: pullfrog/pullfrog@19ed08a1c60d607423b3096ae625ddb70bc161ca # v0.1.142
+        with:
+          # The model's file tools resolve a relative path against the
+          # checkout, and it mangles long absolute ones, so it is told to use
+          # relative paths.
+          prompt: >-
+            ${{ inputs.prompt || format('Review pull request #{0} in {1}. Leave a review with inline comments on real problems only.', github.event.pull_request.number, github.repository) }}
+            Refer to files by their path relative to the repository root, such as
+            src/main.rs, never by an absolute path.
+          push: disabled
+          progress_comments: disabled
+        env:
+          # With GH_TOKEN set the action uses it for git and its GitHub tools
+          # instead of minting a token through Pullfrog's API.
+          GH_TOKEN: ${{ github.token }}
+          # The gateway address is a secret so it is masked in logs; it is
+          # only ever interpolated whole, never sliced or echoed.
+          OPENAI_COMPATIBLE_BASE_URL: ${{ secrets.AGENTGATEWAY_TAILNET_URL }}/ai/sparks/v1
+          # A real key: the tailnet listener requires it and admits it only on
+          # the sparks route.
+          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.AGENTGATEWAY_TROGONSTACK_CI_API_KEY }}
+          # The model is picked here because no Pullfrog console exists to
+          # pick it.
+          PULLFROG_MODEL: openai-compatible/byok
+          OPENAI_COMPATIBLE_MODEL: qwen3.6-35b-a3b
+          # vLLM's --max-model-len on the model servers.
+          OPENAI_COMPATIBLE_CONTEXT: "262144"
+          OPENAI_COMPATIBLE_MAX_OUTPUT: "32768"
